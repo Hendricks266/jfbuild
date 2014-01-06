@@ -248,7 +248,7 @@ extern int tiletovox[MAXTILES];
 extern int usevoxels, voxscale[MAXVOXELS];
 #endif
 #ifdef POLYMOST
-extern int usemodels, usehightile;
+extern int usemodels, usehightile, usenewshading, usetileshades;
 #endif
 
 extern char *engineerrstr;

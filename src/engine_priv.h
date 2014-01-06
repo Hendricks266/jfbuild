@@ -22,7 +22,7 @@ extern int globalposx, globalposy, globalposz, globalhoriz;
 extern short globalang, globalcursectnum;
 extern int globalpal, cosglobalang, singlobalang;
 extern int cosviewingrangeglobalang, sinviewingrangeglobalang;
-extern int globalvisibility;
+extern int globvis, globalvisibility;
 extern int asm1, asm2, asm4;
 extern intptr_t asm3;
 extern int globalshade;
@@ -58,6 +58,17 @@ int wallmost(short *mostbuf, int w, int sectnum, unsigned char dastat);
 int wallfront(int l1, int l2);
 int animateoffs(short tilenum, short fakevar);
 
+//
+// Internal Engine Functions
+//
+
+//
+// getpalookup (internal)
+//
+static inline int getpalookup(int davis, int dashade)
+{
+	return(min(max(dashade+(davis>>8),0),numpalookups-1));
+}
 
 #if defined(__WATCOMC__) && !defined(NOASM)
 

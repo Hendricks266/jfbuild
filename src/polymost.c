@@ -81,7 +81,7 @@ Low priority:
 extern char textfont[2048], smalltextfont[2048];
 
 int rendmode = 0;
-int usemodels=1, usehightile=1, usegoodalpha=0;
+int usemodels=1, usehightile=1, usegoodalpha=0, usenewshading=2, usetileshades=1;
 
 #include <math.h> //<-important!
 typedef struct { float x, cy[2], fy[2]; int n, p, tag, ctag, ftag; } vsptyp;
@@ -95,7 +95,7 @@ static double dxb1[MAXWALLSB], dxb2[MAXWALLSB];
 #define USEZBUFFER 1 //1:use zbuffer (slow, nice sprite rendering), 0:no zbuffer (fast, bad sprite rendering)
 #define LINTERPSIZ 4 //log2 of interpolation size. 4:pretty fast&acceptable quality, 0:best quality/slow!
 #define DEPTHDEBUG 0 //1:render distance instead of texture, for debugging only!, 0:default
-#define FOGSCALE 0.0000384
+#define FOGSCALE 0.0000768 // For GL_EXP2 fog
 
 double gxyaspect, grhalfxdown10x;
 static double gyxscale, gviewxrange, ghalfx, grhalfxdown10, ghoriz;
@@ -136,6 +136,18 @@ int gltexmiplevel = 0;		// discards this many mipmap levels
 static int lastglpolygonmode = 0; //FUK
 int glpolygonmode = 0;     // 0:GL_FILL,1:GL_LINE,2:GL_POINT //FUK
 static GLuint polymosttext = 0;
+// used for fogcalc
+float fogresult, fogresult2, fogcol[4], fogtable[4*MAXPALOOKUPS];
+
+static inline float getshadefactor(int32_t shade)
+{
+    int32_t shadebound = (shade>=numpalookups) ? numpalookups : numpalookups-1;
+    float clamped_shade = min(max(shade, 0), shadebound);
+    if (rendmode == 3 && usetileshades &&
+        (!usehightile || !hicfindsubst(globalpicnum, globalpal, 0)) &&
+        (!usemodels || md_tilehasmodel(globalpicnum) < 0)) return 1.f;
+    return ((float)(numpalookups-clamped_shade))/(float)numpalookups;
+}
 #endif
 
 #if defined(USE_MSC_PRAGMAS)
@@ -251,14 +263,13 @@ static void drawline2d (float x0, float y0, float x1, float y1, unsigned char co
 #ifdef USE_OPENGL
 
 static int drawingskybox = 0;
-static int fog_is_on = 0;
 
 int polymost_texmayhavealpha (int dapicnum, int dapalnum)
 {
 	PTHead * pth;
 	int i;
 
-	pth = PT_GetHead(dapicnum, dapalnum, 0, 1);
+	pth = PT_GetHead(dapicnum, dapalnum, 0, 0, 1);
 	if (!pth) {
 		return 1;
 	}
@@ -280,7 +291,7 @@ void polymost_texinvalidate (int dapicnum, int dapalnum, int dameth)
 	
 	iter = PTIterNewMatch(
 		PTITER_PICNUM | PTITER_PALNUM | PTITER_FLAGS,
-		dapicnum, dapalnum, PTH_CLAMPED, (dameth & METH_CLAMPED) ? PTH_CLAMPED : 0
+		dapicnum, dapalnum, 0, PTH_CLAMPED, (dameth & METH_CLAMPED) ? PTH_CLAMPED : 0
 		);
 	while ((pth = PTIterNext(iter)) != 0) {
 		if (pth->pic[PTHPIC_BASE]) {
@@ -411,17 +422,16 @@ void polymost_glreset ()
 // one-time initialisation of OpenGL for polymost
 void polymost_glinit()
 {
-	GLfloat col[4];
-	
-	bglFogi(GL_FOG_MODE,GL_EXP); //GL_EXP(default),GL_EXP2,GL_LINEAR
-	//bglHint(GL_FOG_HINT,GL_NICEST);
-	bglFogf(GL_FOG_DENSITY,1.0); //must be > 0, default is 1
-	bglFogf(GL_FOG_START,0.0); //default is 0
-	bglFogf(GL_FOG_END,1.0); //default is 1
-	col[0] = 0; col[1] = 0; col[2] = 0; col[3] = 0; //range:0 to 1
-	bglFogfv(GL_FOG_COLOR,col); //default is 0,0,0,0
+    if (!Bstrcmp(glinfo.vendor, "NVIDIA Corporation"))
+        bglHint(GL_FOG_HINT, GL_NICEST);
+    else
+        bglHint(GL_FOG_HINT, GL_DONT_CARE);
+    bglFogi(GL_FOG_MODE, GL_EXP2);
 
-	bglBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+	bglBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    //bglPixelStorei(GL_PACK_ALIGNMENT, 1);
+    //bglPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
 	//bglHint(GL_LINE_SMOOTH_HINT, GL_NICEST);
 	//bglEnable(GL_LINE_SMOOTH);
@@ -432,6 +442,103 @@ void polymost_glinit()
 		bglEnable(GL_MULTISAMPLE_ARB);
 	}
 }
+
+////////// VISIBILITY FOG ROUTINES //////////
+
+// only for usenewshading!=2 (not preferred)
+static void fogcalc_old(int32_t shade, int32_t vis)
+{
+    float f;
+    bglFogi(GL_FOG_MODE, GL_EXP2);
+    if (usenewshading==1)
+    {
+        f = 0.9f * shade;
+        f = (vis > 239) ? (float)(gvisibility*((vis-240+f))) :
+        (float)(gvisibility*(vis+16+f));
+    }
+    else
+    {
+        f = (shade < 0) ? shade * 3.5f : shade * .66f;
+        f = (vis > 239) ? (float)(gvisibility*((vis-240+f)/(klabs(vis-256)))) :
+        (float)(gvisibility*(vis+16+f));
+    }
+    if (f < 0.001f)
+        f = 0.001f;
+    else if (f > 100.0f)
+        f = 100.0f;
+    fogresult = f;
+}
+// For GL_LINEAR fog:
+#define FOGDISTCONST 600
+#define FULLVIS_BEGIN 2.9e30
+#define FULLVIS_END 3.0e30
+static inline void fogcalc(int32_t tile, int32_t shade, int32_t vis, int32_t pal)
+{
+    Bmemcpy(fogcol, &fogtable[pal<<2], sizeof(fogcol));
+    if (rendmode == 3 && usetileshades && shade > 0 &&
+        (!usehightile || !hicfindsubst(tile, pal, 0)) &&
+        (!usemodels || md_tilehasmodel(tile) < 0))
+        shade >>= 1;
+    if (usenewshading!=2)
+    {
+        fogcalc_old(shade, vis);
+        return;
+    }
+    else
+    {
+        float combvis = (float)globalvisibility * (uint8_t)(vis+16);
+        bglFogi(GL_FOG_MODE, GL_LINEAR);
+        if (combvis == 0)
+        {
+            if (shade > 0)
+            {
+                // beg = -D*shade, end = D*(NUMSHADES-1-shade)
+                //  => end/beg = -(NUMSHADES-1-shade)/shade
+                fogresult = -FULLVIS_BEGIN;
+                fogresult2 = FULLVIS_BEGIN * (float)(numpalookups-1-shade)/shade;
+            }
+            else
+            {
+                fogresult = FULLVIS_BEGIN;
+                fogresult2 = FULLVIS_END;
+            }
+            return;
+        }
+        fogresult = -(FOGDISTCONST * shade)/combvis;
+        fogresult2 = (FOGDISTCONST * (numpalookups-1-shade))/combvis;
+    }
+}
+void calc_and_apply_fog(int32_t tile, int32_t shade, int32_t vis, int32_t pal)
+{
+    if (!!glinfo.hack_nofog)
+        return;
+    fogcalc(tile, shade, vis, pal);
+    bglFogfv(GL_FOG_COLOR, fogcol);
+    if (usenewshading!=2)
+    {
+        bglFogf(GL_FOG_DENSITY, fogresult);
+        return;
+    }
+    bglFogf(GL_FOG_START, fogresult);
+    bglFogf(GL_FOG_END, fogresult2);
+}
+void calc_and_apply_fog_factor(int32_t tile, int32_t shade, int32_t vis, int32_t pal, float factor)
+{
+    if (!!glinfo.hack_nofog)
+        return;
+    // NOTE: for usenewshading==2, the fog being/ending distance results are
+    // unused.
+    fogcalc(tile, shade, vis, pal);
+    bglFogfv(GL_FOG_COLOR, fogcol);
+    if (usenewshading!=2)
+    {
+        bglFogf(GL_FOG_DENSITY, fogresult*factor);
+        return;
+    }
+    bglFogf(GL_FOG_START, FULLVIS_BEGIN);
+    bglFogf(GL_FOG_END, FULLVIS_END);
+}
+////////////////////
 
 void resizeglcheck ()
 {
@@ -484,7 +591,6 @@ void resizeglcheck ()
 
 		if (!glinfo.hack_nofog) {
 			bglEnable(GL_FOG);
-			fog_is_on = 1;
 		}
 	}
 }
@@ -496,6 +602,14 @@ void resizeglcheck ()
 	//method: 0:solid, 1:masked(255 is transparent), 2:transluscent #1, 3:transluscent #2
 	//    +4 means it's a sprite, so wraparound isn't needed
 static int pow2xsplit = 0, skyclamphack = 0;
+
+static PTHead *PT_GetHead_Environment(unsigned short flags)
+{
+    int vis = (usetileshades) ? globvis>>3 : 0;
+    int shade = (!usetileshades || rendmode != 3) ? 0 : getpalookup(vis,globalshade);
+    return PT_GetHead(globalpicnum, globalpal, shade, flags, 0);
+}
+
 void drawpoly (double *dpx, double *dpy, int n, int method)
 {
 	#define PI 3.14159265358979323
@@ -599,7 +713,7 @@ void drawpoly (double *dpx, double *dpy, int n, int method)
 		if (method & METH_CLAMPED) ptflags |= PTH_CLAMPED;
 		if (drawingskybox) ptflags |= PTH_SKYBOX;
 		
-		pth = PT_GetHead(globalpicnum, globalpal, ptflags, 0);
+		pth = PT_GetHead_Environment(ptflags);
 		if (pth) {
 			if (drawingskybox) {
 				picidx = drawingskybox - 1;
@@ -652,8 +766,7 @@ void drawpoly (double *dpx, double *dpy, int n, int method)
 
 		{
 			float pc[3];
-			f = ((float)(numpalookups-min(max(globalshade,0),numpalookups)))/((float)numpalookups);
-			pc[0] = pc[1] = pc[2] = f;
+			pc[0] = pc[1] = pc[2] = getshadefactor(globalshade);
 			switch(method & (METH_MASKED | METH_TRANS))
 			{
 				case METH_SOLID:   alphac = 1.0; break;
@@ -798,7 +911,7 @@ void drawpoly (double *dpx, double *dpy, int n, int method)
 							break;
 						case PTHPIC_GLOW:
 							bglColor4f(1.f,1.f,1.f,alphac);
-							if (fog_is_on) bglDisable(GL_FOG);
+							if (!glinfo.hack_nofog) bglDisable(GL_FOG);
 							bglEnable(GL_BLEND);	// blend with what's under us
 							bglDepthMask(GL_FALSE);	// don't update the Z buffer
 							bglBindTexture(GL_TEXTURE_2D, pth->pic[PTHPIC_GLOW]->glpic);
@@ -824,7 +937,7 @@ void drawpoly (double *dpx, double *dpy, int n, int method)
 						case PTHPIC_BASE:
 							break;
 						case PTHPIC_GLOW:
-							if (fog_is_on) bglEnable(GL_FOG);
+							if (!glinfo.hack_nofog) bglEnable(GL_FOG);
 							break;
 						default:
 							break;
@@ -855,7 +968,7 @@ void drawpoly (double *dpx, double *dpy, int n, int method)
 						break;
 					case PTHPIC_GLOW:
 						bglColor4f(1.f,1.f,1.f,alphac);
-						if (fog_is_on) bglDisable(GL_FOG);
+						if (!glinfo.hack_nofog) bglDisable(GL_FOG);
 						bglEnable(GL_BLEND);	// blend with what's under us
 						bglDepthMask(GL_FALSE);	// don't update the Z buffer
 						bglBindTexture(GL_TEXTURE_2D, pth->pic[PTHPIC_GLOW]->glpic);
@@ -877,7 +990,7 @@ void drawpoly (double *dpx, double *dpy, int n, int method)
 					case PTHPIC_BASE:
 						break;
 					case PTHPIC_GLOW:
-						if (fog_is_on) bglEnable(GL_FOG);
+						if (!glinfo.hack_nofog) bglEnable(GL_FOG);
 						break;
 					default:
 						break;
@@ -1539,18 +1652,6 @@ static void polymost_drawalls (int bunch)
 
 	sectnum = thesector[bunchfirst[bunch]]; sec = &sector[sectnum];
 
-#ifdef USE_OPENGL
-	if (!glinfo.hack_nofog && rendmode == 3) {
-		float col[4];
-		col[0] = (float)palookupfog[sec->floorpal].r / 63.f;
-		col[1] = (float)palookupfog[sec->floorpal].g / 63.f;
-		col[2] = (float)palookupfog[sec->floorpal].b / 63.f;
-		col[3] = 0;
-		bglFogfv(GL_FOG_COLOR,col);
-		bglFogf(GL_FOG_DENSITY,gvisibility*((float)((unsigned char)(sec->visibility+16))));
-	}
-#endif
-
 		//DRAW WALLS SECTION!
 	for(z=bunchfirst[bunch];z>=0;z=p2[z])
 	{
@@ -1704,6 +1805,9 @@ static void polymost_drawalls (int bunch)
 			}
 			domostpolymethod = (globalorientation>>7)&3;
 			if (globalposz >= getflorzofslope(sectnum,globalposx,globalposy)) domostpolymethod = -1; //Back-face culling
+
+			calc_and_apply_fog(sec->ceilingpicnum, sec->ceilingshade, sec->visibility, sec->ceilingpal);
+
 			pow2xsplit = 0; domost(x0,fy0,x1,fy1); //flor
 			domostpolymethod = 0;
 		}
@@ -1713,10 +1817,7 @@ static void polymost_drawalls (int bunch)
 #ifdef USE_OPENGL
 			if (rendmode == 3)
 			{
-				if (!glinfo.hack_nofog) {
-					bglDisable(GL_FOG);
-					fog_is_on = 0;
-				}
+				calc_and_apply_fog_factor(sec->floorpicnum, sec->floorshade, sec->visibility, sec->floorpal, 0.005);
 
 					//Use clamping for tiled sky textures
 				for(i=(1<<pskybits)-1;i>0;i--)
@@ -1948,7 +2049,6 @@ static void polymost_drawalls (int bunch)
 				skyclamphack = 0;
 				if (!glinfo.hack_nofog) {
 					bglEnable(GL_FOG);
-					fog_is_on = 1;
 				}
 			}
 #endif
@@ -2063,10 +2163,7 @@ static void polymost_drawalls (int bunch)
 #ifdef USE_OPENGL
 			if (rendmode == 3)
 			{
-				if (!glinfo.hack_nofog) {
-					bglDisable(GL_FOG);
-					fog_is_on = 0;
-				}
+				calc_and_apply_fog_factor(sec->ceilingpicnum, sec->ceilingshade, sec->visibility, sec->ceilingpal, 0.005);
 
 					//Use clamping for tiled sky textures
 				for(i=(1<<pskybits)-1;i>0;i--)
@@ -2297,7 +2394,6 @@ static void polymost_drawalls (int bunch)
 				skyclamphack = 0;
 				if (!glinfo.hack_nofog) {
 					bglEnable(GL_FOG);
-					fog_is_on = 1;
 				}
 			}
 #endif
@@ -2378,6 +2474,8 @@ static void polymost_drawalls (int bunch)
 				}
 				if (wal->cstat&256) { gvx = -gvx; gvy = -gvy; gvo = -gvo; } //yflip
 
+				calc_and_apply_fog(wal->picnum, wal->shade, sec->visibility, sec->floorpal);
+
 				pow2xsplit = 1; domost(x1,ocy1,x0,ocy0);
 
 				if (wal->cstat&8) { gux = ogux; guy = oguy; guo = oguo; }
@@ -2414,6 +2512,8 @@ static void polymost_drawalls (int bunch)
 				}
 				if (nwal->cstat&256) { gvx = -gvx; gvy = -gvy; gvo = -gvo; } //yflip
 
+				calc_and_apply_fog(nwal->picnum, nwal->shade, sec->visibility, sec->floorpal);
+
 				pow2xsplit = 1; domost(x0,ofy0,x1,ofy1);
 
 				if (wal->cstat&(2+8)) { guo = oguo; gux = ogux; guy = oguy; }
@@ -2445,6 +2545,9 @@ static void polymost_drawalls (int bunch)
 				guo = gdo*t - guo;
 			}
 			if (wal->cstat&256) { gvx = -gvx; gvy = -gvy; gvo = -gvo; } //yflip
+
+			calc_and_apply_fog(wal->picnum, wal->shade, sec->visibility, sec->floorpal);
+
 			pow2xsplit = 1; domost(x0,-10000,x1,-10000);
 		}
 
@@ -2888,15 +2991,7 @@ void polymost_drawmaskwall (int damaskwallcnt)
 	if (wal->cstat&128) { if (!(wal->cstat&512)) method = METH_TRANS; else method = METH_INTRANS; }
 
 #ifdef USE_OPENGL
-	if (!glinfo.hack_nofog && rendmode == 3) {
-		float col[4];
-		col[0] = (float)palookupfog[sec->floorpal].r / 63.f;
-		col[1] = (float)palookupfog[sec->floorpal].g / 63.f;
-		col[2] = (float)palookupfog[sec->floorpal].b / 63.f;
-		col[3] = 0;
-		bglFogfv(GL_FOG_COLOR,col);
-		bglFogf(GL_FOG_DENSITY,gvisibility*((float)((unsigned char)(sec->visibility+16))));
-	}
+	calc_and_apply_fog(wal->picnum, wal->shade, sec->visibility, sec->floorpal);
 #endif
 
 	for(i=0;i<2;i++)
@@ -2994,15 +3089,7 @@ void polymost_drawsprite (int snum)
 	if (tspr->cstat&2) { if (!(tspr->cstat&512)) method = METH_TRANS + METH_CLAMPED; else method = METH_INTRANS + METH_CLAMPED; }
 
 #ifdef USE_OPENGL
-	if (!glinfo.hack_nofog && rendmode == 3) {
-		float col[4];
-		col[0] = (float)palookupfog[sector[tspr->sectnum].floorpal].r / 63.f;
-		col[1] = (float)palookupfog[sector[tspr->sectnum].floorpal].g / 63.f;
-		col[2] = (float)palookupfog[sector[tspr->sectnum].floorpal].b / 63.f;
-		col[3] = 0;
-		bglFogfv(GL_FOG_COLOR,col); //default is 0,0,0,0
-		bglFogf(GL_FOG_DENSITY,gvisibility*((float)((unsigned char)(sector[tspr->sectnum].visibility+16))));
-	}
+	calc_and_apply_fog(tspr->picnum, globalshade, sector[tspr->sectnum].visibility, sector[tspr->sectnum].floorpal);
 
 	while (rendmode == 3 && !(spriteext[tspr->owner].flags&SPREXT_NOTMD)) {
 		if (usemodels && tile2model[tspr->picnum].modelid >= 0 && tile2model[tspr->picnum].framenum >= 0) {
@@ -3559,7 +3646,13 @@ void polymost_dorotatesprite (int sx, int sy, int z, short a, short picnum,
 			if ((d < y2) != (d < 0)) { py[n] = fy; px[n] = (px2[zz]-px2[z])*d/y2 + px2[z]; n++; }
 			z = zz;
 		} while (z);
+#ifdef USE_OPENGL
+		if (!glinfo.hack_nofog) bglDisable(GL_FOG);
+#endif
 		pow2xsplit = 0; drawpoly(px,py,n,method);
+#ifdef USE_OPENGL
+		if (!glinfo.hack_nofog) bglEnable(GL_FOG);
+#endif
 	}
 
 #ifdef USE_OPENGL
@@ -3769,10 +3862,10 @@ void polymost_fillpolygon (int npoints)
 	if (gloy1 != -1) setpolymost2dview(); //disables blending, texturing, and depth testing
 	bglEnable(GL_ALPHA_TEST);
 	bglEnable(GL_TEXTURE_2D);
-	pth = PT_GetHead(globalpicnum, globalpal, usehightile ? PTH_HIGHTILE : 0, 0);
+	pth = PT_GetHead_Environment(usehightile ? PTH_HIGHTILE : 0);
 	bglBindTexture(GL_TEXTURE_2D, (pth && pth->pic[PTHPIC_BASE]) ? pth->pic[ PTHPIC_BASE ]->glpic : 0);
 
-	f = ((float)(numpalookups-min(max(globalshade,0),numpalookups)))/((float)numpalookups);
+	f = getshadefactor(globalshade);
 	switch ((globalorientation>>7)&3) {
 		case 0:
 		case 1: a = 1.0; bglDisable(GL_BLEND); break;
@@ -3810,7 +3903,7 @@ int polymost_drawtilescreen (int tilex, int tiley, int wallnum, int dimen)
 		}
 	}
 
-	pth = PT_GetHead(wallnum, 0, (usehightile ? PTH_HIGHTILE : 0) | PTH_CLAMPED, 0);
+	pth = PT_GetHead(wallnum, 0, 0, (usehightile ? PTH_HIGHTILE : 0) | PTH_CLAMPED, 0);
 	
 	if (!pth || !pth->pic[PTHPIC_BASE]) {
 		return 0;
@@ -3938,6 +4031,9 @@ int polymost_printext256(int xpos, int ypos, short col, short backcol, const  ch
 	bglDisable(GL_ALPHA_TEST);
 	bglDepthMask(GL_FALSE);	// disable writing to the z-buffer
 
+    // XXX: Don't fogify the OSD text in the editor with usenewshading=2.
+    bglDisable(GL_FOG);
+
 	if (backcol >= 0) {
 		bglColor4ub(b.r,b.g,b.b,255);
 		c = Bstrlen(name);
@@ -4060,6 +4156,16 @@ static int osdcmd_polymostvars(const osdfuncparm_t *parm)
 	else if (!Bstrcasecmp(parm->name, "usehightile")) {
 		if (showval) { buildprintf("usehightile is %d\n", usehightile); }
 		else usehightile = (val != 0);
+		return OSDCMD_OK;
+	}
+	else if (!Bstrcasecmp(parm->name, "usenewshading")) {
+		if (showval) { buildprintf("usenewshading is %d\n", usenewshading); }
+		else usenewshading = (val & 2);
+		return OSDCMD_OK;
+	}
+	else if (!Bstrcasecmp(parm->name, "usetileshades")) {
+		if (showval) { buildprintf("usetileshades is %d\n", usetileshades); }
+		else usetileshades = (val != 0);
 		return OSDCMD_OK;
 	}
 #ifdef USE_OPENGL
@@ -4207,6 +4313,8 @@ void polymost_initosdfuncs(void)
 #endif
 	OSD_RegisterFunction("usemodels","usemodels: enable/disable model rendering in >8-bit mode",osdcmd_polymostvars);
 	OSD_RegisterFunction("usehightile","usehightile: enable/disable hightile texture rendering in >8-bit mode",osdcmd_polymostvars);
+	OSD_RegisterFunction("usenewshading","usenewshading: visibility code: 0: Polymost, 2: Classic",osdcmd_polymostvars);
+	OSD_RegisterFunction("usetileshades","usetileshades: enable/disable Polymost tile ART-lookup shade textures",osdcmd_polymostvars);
 #if 1
 	OSD_RegisterFunction("dumptexturedefs","dumptexturedefs: dumps all texture definitions in the new style",dumptexturedefs);
 	OSD_RegisterFunction("debugtexturehash","debugtexturehash: dumps all the entries in the texture hash",debugtexturehash);

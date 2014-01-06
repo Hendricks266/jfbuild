@@ -37,6 +37,7 @@ struct PTMIdent_typ {
     int flags;
     int palnum;
     int picnum;
+    int shade;
     int layer;      //see PTHPIC_* constants
 	int effects;    //see HICEFFECT_* constants
 	char filename[BMAX_PATH];
@@ -56,6 +57,7 @@ struct PTHead_typ {
 					// when !(flags & PTH_SKYBOX), see PTHPIC_* constants
 	int picnum;
 	int palnum;
+	int shade;
 	unsigned short flags;
 	
 	hicreplctyp *repldef;
@@ -68,7 +70,8 @@ typedef struct PTHead_typ PTHead;
 enum {
 	PTITER_PICNUM = 1,
 	PTITER_PALNUM = 2,
-	PTITER_FLAGS  = 4,
+	PTITER_SHADE  = 4,
+	PTITER_FLAGS  = 8,
 };
 
 struct PTIter_typ;	// an opaque iterator type for walking the internal hash
@@ -110,11 +113,12 @@ void PTClear();
  * @param match PTITER_* flags indicating which parameters to test
  * @param picnum when (match&PTITER_PICNUM), specifies the picnum
  * @param palnum when (match&PTITER_PALNUM), specifies the palnum
+ * @param shade when (match&PTITER_SHADE), specifies the shade
  * @param flagsmask when (match&PTITER_FLAGS), specifies the mask to apply to flags
  * @param flags when (match&PTITER_FLAGS), specifies the flags to test
  * @return an iterator
  */
-PTIter PTIterNewMatch(int match, int picnum, int palnum, unsigned short flagsmask, unsigned short flags);
+PTIter PTIterNewMatch(int match, int picnum, int palnum, int shade, unsigned short flagsmask, unsigned short flags);
 
 /**
  * Creates a new iterator for walking the entire header hash
@@ -148,7 +152,7 @@ void PTIterFree(PTIter iter);
  *
  * Shared method for polymost.c to call.
  */
-PTHead * PT_GetHead(int picnum, int palnum, unsigned short flags, int peek);
+PTHead * PT_GetHead(int picnum, int palnum, int shade, unsigned short flags, int peek);
 
 
 /**
