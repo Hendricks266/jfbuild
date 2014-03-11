@@ -232,6 +232,9 @@ EXTERN int captureformat;
 extern unsigned char vgapalette[5*256];
 extern unsigned int drawlinepat;
 
+EXTERN int faketilesiz[MAXTILES];
+EXTERN char *faketiledata[MAXTILES];
+
 extern void faketimerhandler(void);
 
 extern char apptitle[256];
@@ -362,6 +365,8 @@ void   initspritelists(void);
 int   loadboard(char *filename, char fromwhere, int *daposx, int *daposy, int *daposz, short *daang, short *dacursectnum);
 int   loadmaphack(char *filename);
 int   saveboard(char *filename, int *daposx, int *daposy, int *daposz, short *daang, short *dacursectnum);
+void   set_picsizanm(int picnum, short dasizx, short dasizy, int daanm);
+int   tile_exists(int picnum);
 int   loadpics(char *filename, int askedsize);
 void   loadtile(short tilenume);
 int   qloadkvx(int voxindex, char *filename);
@@ -433,6 +438,8 @@ int   setsprite(short spritenum, int newx, int newy, int newz);
 int   setspritez(short spritenum, int newx, int newy, int newz);
 
 int   screencapture(char *filename, char inverseit);
+
+int   getclosestcol(int r, int g, int b);
 
 #define STATUS2DSIZ 144
 void   qsetmode640350(void);

@@ -20,6 +20,7 @@ $(SRC)/textfont.$o: $(SRC)/textfont.c
 $(SRC)/smalltextfont.$o: $(SRC)/smalltextfont.c
 $(SRC)/glbuild.$o: $(SRC)/glbuild.c $(INC)/glbuild.h $(INC)/baselayer.h
 $(SRC)/kplib.$o: $(SRC)/kplib.c $(INC)/compat.h
+$(SRC)/lz4.$o: $(SRC)/lz4.c $(SRC)/lz4.h
 $(SRC)/mmulti_null.$o: $(SRC)/mmulti_null.c $(INC)/mmulti.h
 $(SRC)/mmulti.$o: $(SRC)/mmulti.c
 $(SRC)/osd.$o: $(SRC)/osd.c $(INC)/build.h $(INC)/osd.h $(INC)/compat.h $(INC)/baselayer.h
